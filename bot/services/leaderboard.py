@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
 from bot.models.score import Score, TrackEnum
 from sqlalchemy import func
+from typing import Optional
 
 
 class LeaderboardService:
@@ -52,11 +53,24 @@ class LeaderboardService:
         }
 
     @staticmethod
-    def get_leaderboard(db: Session, track: TrackEnum, limit: int = 10):
+    def get_leaderboard(
+        db: Session,
+        track: Optional[TrackEnum] = None,
+        limit: int = 10
+    ):
+        query = db.query(
+            Score.slack_user_id,
+            Score.slack_username,
+            func.sum(Score.points).label("total_points")
+        )
+
+        if track:
+            query = query.filter(Score.track == track)
+
         return (
-            db.query(Score)
-            .filter(Score.track == track)
-            .order_by(Score.points.desc())
+            query
+            .group_by(Score.slack_user_id, Score.slack_username)
+            .order_by(func.sum(Score.points).desc())
             .limit(limit)
             .all()
         )
