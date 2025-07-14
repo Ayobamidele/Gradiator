@@ -1,0 +1,6 @@
+
+hi nox
+form gloves
+form glove
+deploy scout
+mic on
