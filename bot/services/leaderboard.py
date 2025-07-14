@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
-from bot.models.score import Score
-from sqlalchemy.exc import NoResultFound
+from bot.models.score import Score, TrackEnum
+from sqlalchemy import func
+
 
 class LeaderboardService:
     @staticmethod
@@ -16,9 +17,46 @@ class LeaderboardService:
         return score_obj
 
     @staticmethod
-    def get_score(db: Session, user_id: str):
-        return db.query(Score).filter(Score.user_id == user_id).first()
+    def get_score(db: Session, slack_user_id: str):
+        total_score = (
+            db.query(func.sum(Score.points))
+            .filter(Score.slack_user_id == slack_user_id)
+            .scalar()
+        ) or 0.0
+
+        user_scores = (
+            db.query(Score)
+            .filter(Score.slack_user_id == slack_user_id)
+            .order_by(Score.updated_at.desc())
+            .all()
+        )
+
+        track_data = {}
+
+        for score in user_scores:
+            track = score.track.value
+
+            if track not in track_data:
+                track_data[track] = {
+                    "total_score": 0.0,
+                    "latest_stage": score.stage.value,
+                    "latest_score": score.points
+                }
+
+            # Add points to total score
+            track_data[track]["total_score"] += score.points
+
+        return {
+            "total_score": total_score,
+            "tracks": track_data
+        }
 
     @staticmethod
-    def get_leaderboard(db: Session, limit: int = 10):
-        return db.query(Score).order_by(Score.score.desc()).limit(limit).all() 
+    def get_leaderboard(db: Session, track: TrackEnum, limit: int = 10):
+        return (
+            db.query(Score)
+            .filter(Score.track == track)
+            .order_by(Score.points.desc())
+            .limit(limit)
+            .all()
+        )

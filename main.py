@@ -1,17 +1,12 @@
-from fastapi import FastAPI, Request, Depends, Form
+from fastapi import FastAPI, Request, Depends, Form, BackgroundTasks
 from slack_sdk.signature import SignatureVerifier
 from bot.core.config import settings
 from bot.services.slack import SlackService
 from bot.core.dependencies import get_db
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
-from urllib.parse import parse_qs
 import logging
 from bot.services.leaderboard import LeaderboardService
-import pandas as pd
-from bot.models.score import Score, StageEnum, TrackEnum
-import requests
-import io
 
 
 logger = logging.getLogger("slack")
@@ -50,36 +45,78 @@ async def add_or_update_score(
 
 
 @app.post("/slack/leaderboard")
-async def leaderboard(request: Request, db: Session = Depends(get_db)):
-    leaderboard = LeaderboardService.get_leaderboard(db, limit=10)
+async def leaderboard(
+    request: Request,
+    user_id: str = Form(...),
+    user_name: str = Form(...),
+    text: str = Form(""),
+    db: Session = Depends(get_db)
+):
+    track = None
+    cleaned_text = text.strip().lower()
+
+    if cleaned_text:
+        try:
+            track = TrackEnum(cleaned_text)
+        except ValueError:
+            return JSONResponse(
+                content={
+                    "text": f"Invalid track '{cleaned_text}'. Valid options: backend, frontend, design, devops, data_analysis, project_management"
+                },
+                status_code=200
+            )
+
+    leaderboard = LeaderboardService.get_leaderboard(db, track=track, limit=10)
+
     if not leaderboard:
-        return JSONResponse(content={"text": "No scores yet."})
-    leaderboard_text = "*Leaderboard:*" + "\n".join([
-        f"{idx+1}. <@{entry.user_id}>: {entry.score}" for idx, entry in enumerate(leaderboard)
+        return JSONResponse(content={"text": "No scores found for this track."}, status_code=200)
+
+    title = f"*🏆 Leaderboard* {'for *' + track.value + '*' if track else ''}:\n"
+    leaderboard_text = "\n".join([
+        f"{idx+1}. `{entry.slack_username}` — {entry.points} pts (Stage {entry.stage.value})"
+        for idx, entry in enumerate(leaderboard)
     ])
+
     return JSONResponse(
-        content={"text": leaderboard_text}
+        content={
+            "response_type": "in_channel",
+            "text": title + leaderboard_text
+        }
     )
 
 
 @app.post("/slack/myscore")
-async def myscore(request: Request, db: Session = Depends(get_db)):
-    raw_body = await request.body()
-    form = parse_qs(raw_body.decode())
-    user_id = form.get("user_id", [None])[0]
-    if not user_id:
-        return JSONResponse(
-            content={"text": "Could not determine user."},
-            status_code=400
-        )
-    score_entry = LeaderboardService.get_score(db, user_id)
-    if not score_entry:
-        text = "You have no score yet."
+async def myscore(
+    background_tasks: BackgroundTasks,
+    user_id: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    score_data = LeaderboardService.get_score(db, user_id)
+
+    if not score_data or score_data["total_score"] == 0:
+        message = "You have no score yet."
     else:
-        text = f"Your score is: {score_entry.score}"
-    SlackService.send_dm(user_id, text)
+        total_score = score_data["total_score"]
+        tracks = score_data["tracks"]
+
+        message_lines = [
+            f"*🎯 Total Score Across All Tracks:* {total_score:.2f} pts", ""]
+
+        for track, info in tracks.items():
+            message_lines.append(
+                f"*• {track.capitalize()}*\n"
+                f"  └ Total: `{info['total_score']:.2f}` pts\n"
+                f"  └ Latest Stage: `{info['latest_stage']}` ({info['latest_score']:.2f} pts)"
+            )
+
+        message = "\n".join(message_lines)
+
+    # Schedule Slack DM
+    background_tasks.add_task(SlackService.send_dm, user_id, message)
+
     return JSONResponse(
-        content={"text": "Your score has been sent to you via DM."}
+        content={"text": "📬 Your detailed score breakdown has been sent via DM."},
+        status_code=200
     )
 
 
