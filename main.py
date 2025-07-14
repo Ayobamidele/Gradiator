@@ -7,12 +7,55 @@ from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 import logging
 from bot.services.leaderboard import LeaderboardService
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+import traceback
 
 
 logger = logging.getLogger("slack")
 logging.basicConfig(level=logging.INFO)
 app = FastAPI()
 verifier = SignatureVerifier(signing_secret=settings.SLACK_SIGNING_SECRET)
+
+
+# Log all unhandled exceptions
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error("Unhandled Exception occurred:")
+    logger.error("Path: %s", request.url.path)
+    logger.error("Method: %s", request.method)
+    logger.error("Headers: %s", dict(request.headers))
+    logger.error("Exception: %s", repr(exc))
+    logger.error("Traceback:\n%s", traceback.format_exc())
+
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error"},
+    )
+
+# Log validation (422) errors
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    logger.warning("Validation Error on path %s: %s",
+                   request.url.path, exc.errors())
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()},
+    )
+
+# Log 400/403/404 HTTP errors
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    logger.warning("HTTP Error %s on %s: %s", exc.status_code,
+                   request.url.path, exc.detail)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+    )
 
 
 @app.post("/slack/score")
