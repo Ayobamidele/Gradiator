@@ -8,20 +8,53 @@ import pandas as pd
 from bot.models.score import Score, StageEnum, TrackEnum
 
 
+import time
+from typing import Dict
+from slack_sdk import WebClient
+from bot.core.config import settings
+
+
 class SlackService:
+    _user_cache: Dict[str, str] = {}
+    _last_cache_time: float = 0
+    _cache_ttl: int = 3600  # Cache for 1 hour
+
     @staticmethod
     def _client():
         return WebClient(token=settings.SLACK_BOT_TOKEN)
 
     @staticmethod
+    def _refresh_user_cache():
+        now = time.time()
+        if not SlackService._user_cache or (now - SlackService._last_cache_time) > SlackService._cache_ttl:
+            try:
+                response = SlackService._client().users_list()
+            except SlackApiError as e:
+                if e.response.status_code == 429:
+                    retry_after = int(
+                        e.response.headers.get("Retry-After", 10))
+                    print(
+                        f"Rate limited. Retrying after {retry_after} seconds...")
+                    time.sleep(retry_after)
+                    response = SlackService._client().users_list()
+                else:
+                    raise Exception(
+                        f"User with username '{username}' not found.")
+
+            SlackService._user_cache.clear()
+            for user in response["members"]:
+                if not user.get("deleted", False) and not user.get("is_bot", False):
+                    SlackService._user_cache[user["name"]] = user["id"]
+            SlackService._last_cache_time = now
+
+    @staticmethod
     def get_user_id_by_username(username: str) -> str:
-        response = SlackService._client().users_list()
-        for user in response["members"]:
-            if user["name"] == username:
-                return user["id"]
+        SlackService._refresh_user_cache()
+        user_id = SlackService._user_cache.get(username)
+        if user_id:
+            return user_id
         raise Exception(f"User with username '{username}' not found.")
 
-    
     @staticmethod
     def list_channels(channel_name=None):
         response = SlackService._client().conversations_list(
@@ -31,7 +64,6 @@ class SlackService:
         if channel_name:
             channels = [c for c in channels if c["name"] == channel_name]
         return [{"name": c["name"], "id": c["id"]} for c in channels]
-
 
     @staticmethod
     def send_dm(user_id: str, text: str):
@@ -83,10 +115,12 @@ class SlackService:
                 errors.append(f"Row {idx+2}: Invalid stage or track - {e}")
                 continue
             try:
-                slack_user_id = SlackService.get_user_id_by_username(slack_username)
+                slack_user_id = SlackService.get_user_id_by_username(
+                    slack_username)
             except Exception as e:
                 slack_user_id = "unknown"
-                errors.append(f"Row {idx+2}: Could not get Slack user ID for username '{slack_username}' - {e}")
+                errors.append(
+                    f"Row {idx+2}: Could not get Slack user ID for username '{slack_username}' - {e}")
             try:
                 log = Score(
                     slack_username=slack_username,
@@ -99,7 +133,8 @@ class SlackService:
                 )
                 logs.append(log)
             except Exception as e:
-                errors.append(f"Row {idx+2}: Error creating Score object - {e}")
+                errors.append(
+                    f"Row {idx+2}: Error creating Score object - {e}")
                 continue
         if logs:
             db.add_all(logs)
