@@ -117,7 +117,7 @@ async def leaderboard(
 
     title = f"*🏆 Leaderboard* {'for *' + track.value + '*' if track else ''}:\n"
     leaderboard_text = "\n".join([
-        f"{idx+1}. `{entry.slack_username}` — {entry.points} pts (Stage {entry.stage.value})"
+        f"{idx+1}. `{entry.slack_username}` — {entry.total_points:.2f} pts"
         for idx, entry in enumerate(leaderboard)
     ])
 
