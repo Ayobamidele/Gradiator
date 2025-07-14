@@ -1,17 +1,15 @@
+import time
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from bot.core.config import settings
-from sqlalchemy.orm import Session
+from typing import Dict
 import requests
 import io
+import re
 import pandas as pd
 from bot.models.score import Score, StageEnum, TrackEnum
-
-
-import time
-from typing import Dict
-from slack_sdk import WebClient
-from bot.core.config import settings
+from fastapi import Request
+from urllib.parse import parse_qs
 
 
 class SlackService:
@@ -33,13 +31,13 @@ class SlackService:
                 if e.response.status_code == 429:
                     retry_after = int(
                         e.response.headers.get("Retry-After", 10))
-                    print(
-                        f"Rate limited. Retrying after {retry_after} seconds...")
+                    print(f"""
+                        Rate limited. Retrying after {retry_after} seconds...
+                    """)
                     time.sleep(retry_after)
                     response = SlackService._client().users_list()
                 else:
-                    raise Exception(
-                        f"User with username '{username}' not found.")
+                    raise Exception("Sorry. Couldn't get user :/")
 
             SlackService._user_cache.clear()
             for user in response["members"]:
@@ -75,6 +73,38 @@ class SlackService:
         client.chat_postMessage(channel=channel_id, text=text)
 
     @staticmethod
+    def get_latest_file_id_for_user(user_id: str) -> str:
+        try:
+            response = SlackService._client().files_list(user=user_id, count=1)
+            files = response.get("files", [])
+            if not files:
+                return None
+            return files[0]["id"]
+        except Exception as e:
+            print(f"Error fetching user file: {e}")
+            return None
+
+    @staticmethod
+    def parse_slack_form(request: Request):
+        async def inner():
+            body = await request.body()
+            form = parse_qs(body.decode())
+            text = form.get("text", [""])[0]
+            channel_id = form.get("channel_id", [""])[0]
+            user_ids = re.findall(r"<@([A-Z0-9]+)(?:\|[^>]+)?>", text)
+
+            if user_ids:
+                return user_ids, channel_id, True
+
+            raw_words = text.replace(',', ' ').split()
+            usernames = [
+                word.strip().lstrip('@').replace(" ", "").lower()
+                for word in raw_words if word.strip()
+            ]
+            return usernames, channel_id, False
+        return inner
+
+    @staticmethod
     def process_slack_file(file_id, user_id, user_name, db):
         bot_token = settings.SLACK_BOT_TOKEN
         info_url = "https://slack.com/api/files.info"
@@ -83,13 +113,19 @@ class SlackService:
         info_resp = requests.get(info_url, headers=headers, params=params)
         info_data = info_resp.json()
         if not info_data.get("ok"):
-            return {"message": f"Failed to get file info: {info_data}", "status_code": 400}
+            return {
+                "message": f"Failed to get file info: {info_data}",
+                "status_code": 400
+            }
         file_data = info_data["file"]
         url_private = file_data["url_private"]
         filename = file_data["name"]
         file_resp = requests.get(url_private, headers=headers)
         if file_resp.status_code != 200:
-            return {"message": f"Failed to download file: {file_resp.text}", "status_code": 400}
+            return {
+                "message": f"Failed to download file: {file_resp.text}",
+                "status_code": 400
+            }
         file_bytes = file_resp.content
         try:
             if filename.endswith(".csv"):
@@ -100,7 +136,10 @@ class SlackService:
             return {"message": f"Error reading file: {e}", "status_code": 400}
         required_columns = {"slack_username", "points", "stage", "track"}
         if not required_columns.issubset(df.columns):
-            return {"message": f"Missing columns. Required: {required_columns}", "status_code": 400}
+            return {
+                "message": f"Missing columns. Required: {required_columns}",
+                "status_code": 400
+            }
         logs = []
         errors = []
         for idx, row in df.iterrows():

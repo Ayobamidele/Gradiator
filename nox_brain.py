@@ -6,6 +6,10 @@ import random
 # 🧠 MEMORY MODULE
 command_log = []
 
+filename = "memory.txt"
+if not os.path.exists(filename):
+    open(filename, "w").close()
+
 # 🔁 LOAD PREVIOUS MEMORY
 try:
     with open("memory.txt", "r+") as file:
