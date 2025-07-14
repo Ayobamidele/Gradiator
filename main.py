@@ -10,6 +10,7 @@ from bot.services.leaderboard import LeaderboardService
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import traceback
+from bot.models.score import TrackEnum
 
 
 logger = logging.getLogger("slack")
